@@ -22,7 +22,7 @@ CRED_FILE = Path(__file__).resolve().parents[4] / "credentials.local.ini"
 
 SERVER = r"USERPC\ZABOTASQLSERVER1"
 USER = "sa"
-PASSWORD = "Hj61jaz4Kaz"
+PASSWORD = ""
 DRIVER = "ODBC Driver 17 for SQL Server"
 DEFAULT_DB = "wellness_new"
 
