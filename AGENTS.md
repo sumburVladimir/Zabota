@@ -2,44 +2,68 @@
 
 ## Что это
 Автоматизация работы с системой «Забота»: импорт из МИС, сценарии рассылок (продюсер), клиент PR2.
-- **Базы клиник** стоят на серверах самих клиентов (доступ через RDP/Ассистент или через выгрузки CSV/XLS; карты их схем — в `docs/zabota/clients/<Zabota_ID>/`).
-- **Локальная БД `wellness_new`** (`USERPC\ZABOTASQLSERVER1`) — это **только тестовый слепок (эталон схемы и песочница)** на ПК пользователя. В ней нет данных текущих клиентских задач; используй её только для сверки типовой структуры таблиц и создания временных баз `tmp_...` под тесты.
+- **Базы клиник** стоят на серверах самих клиентов (доступ через RDP/Ассистент, срез в буфере обмена или выгрузки CSV/XLS; карты их схем — в `docs/zabota/clients/<Zabota_ID>/`).
+- **Локальная БД `wellness_new`** (`USERPC\ZABOTASQLSERVER1`) — только тестовый слепок (эталон схемы и песочница для `tmp_` баз) на ПК пользователя. В ней нет данных текущих клиентских задач.
 Общение и документация — на русском.
 
-## Сначала прочитай
-1. `docs/zabota/README.md` — карта документации.
-2. По теме: `architecture.md`, `pr2.md`, `producer.md`, `import.md`, `integrator.md`.
-3. База знаний: `docs/zabota/integration/README.md` (индекс, не читать всё).
-4. Для запросов к БД — скилл `zabota-db`.
-5. Задачи и заявки из Битрикс24 — скилл `bitrix24` (через браузер, без API).
-6. Регламенты и инструкции компании — скилл `teamly`; зеркало базы знаний
-   в `docs/zabota/teamly/` (индекс — `teamly/README.md`), сначала смотри его.
-7. Сценарии рассылок по брифу (памятки, приглашения) — `docs/zabota/scenarios-audit.md`;
-   устройство таблиц — `docs/zabota/producer.md`.
+## ГЛАВНОЕ ПРАВИЛО СКОРОСТИ (НЕ ЧИТАТЬ ЛИШНЕГО!)
+1. **НЕ читай документацию «впрок»!** Никогда не открывай `producer.md`, `scenarios-audit.md`, `README.md` или чужие папки клиник `docs/zabota/clients/*`, если пользователь просто просит написать типовой SQL-сегмент или акцию.
+2. **Никогда не читай папки других клиник** (`docs/zabota/clients/<чужой_ID>/`), чтобы «посмотреть примеры» — там лежат списки на тысячи `Procedure_id`, которые забивают контекст и тормозят ответ.
+3. **Если в условии брифа/задачи есть двусмысленность** (например, к какому блоку относятся врачи или услуги) — **НЕ ищи ответ по всем файлам проекта**. Задай пользователю 1 короткий вопрос ИЛИ сразу выдай готовый SQL с понятным комментарием `/* УТОЧНИТЬ: ... */`.
 
-## Как работать
-- Сначала документация, потом код/база.
-- Тяжёлые папки, архивы, логи — не читать целиком: `inventory.csv` или `grep`.
-- Выжимки складывать в `docs/zabota/`, а не держать только в чате; карты клиентских БД — в `docs/zabota/clients/<Zabota_ID>/schema-map.md`.
-- Новая крупная тема / следующая клиника — отдельная сессия (чтобы не раздувать контекст).
-- **Посмотреть экран пользователя (RDP / Ассистент на втором мониторе):** запустить `powershell -ExecutionPolicy Bypass -File tools/look_screen.ps1` и прочитать `C:\Users\Владимир Капов\AppData\Local\Temp\opencode\screen_1.png` (второй монитор, где открыт RDP/Ассистент) через `read`.
-- **Единый срез базы клиники без CSV (`00_snapshot_for_agent.sql`):**
-  1. Пользователь выполняет `tools/sql/recon/00_snapshot_for_agent.sql` в SSMS клиники и копирует результат в буфер обмена (`Ctrl+A -> Ctrl+C`).
-  2. Сабагент **`zabota-recon`** разворачивает его в локальную песочницу `tmp_clinic_<ID>` через `python tools/snapshot_to_sandbox.py --from-clipboard --clinic-id <ID>`, сверяет услуги с брифом (`tools/brief_group_match.py`) или ищет причину аномалии по пациенту/сообщениям.
-- **Оркестрация генерации и проверки SQL (Кодер → Аудитор):**
-  1. Написание SQL-сегментов и патч-скриптов делегировать сабагенту **`zabota-sql-coder`** (он пишет код строго по реальной схеме клиники в `tmp_clinic_<ID>` без домыслов из брифа).
-  2. Любой сгенерированный SQL перед выдачей пользователю обязательно передавать сабагенту **`zabota-sql-auditor`**, который прогоняет его через `python tools/verify_sql.py --db tmp_clinic_<ID>` и чек-лист `scenarios-audit.md`. Если вердикт `FAILED` — возвращать `zabota-sql-coder` на доработку до получения `PASSED`.
-- **Массовые `UPDATE`/`DELETE`:** сначала бэкап строк
-  (`SELECT * INTO <table>_bak_YYYYMMDD ...`), затем блоки в транзакциях с проверкой `@@ROWCOUNT`.
-- **Кириллица в выводе:** писать результат в файл UTF-8 и читать файлом — консоль PowerShell ломает кодировку.
+## Два режима работы по SQL-задачам
+
+### Режим 1. БЫСТРЫЙ (по умолчанию — «напиши акцию / сегмент / условие»)
+Если пользователь дал условия словами/брифом (список ID услуг, врачей, сроки, возраст):
+- **Не запускай цепочку из 3 сабагентов и не читай файлы из `docs/`.**
+- Сразу пиши SQL по встроенному каркасу ниже (или вызови один `zabota-sql-coder` без чтения лишних файлов).
+- Каркас ручного SQL-сегмента (`deliv_conditions.Expression`):
+  ```sql
+  SELECT TOP (:IPAT) vv.* FROM (
+      SELECT patients.* FROM vpatients patients
+      WHERE cellphone LIKE ('79%')
+        AND hide = 0 AND Exclude = 0
+        /* --- УСЛОВИЯ БРИФА (все через AND, OR только если явно сказано ИЛИ) --- */
+        -- Возраст: AND patients.age BETWEEN 18 AND 99
+        -- Был визит N..M дней назад:
+        -- AND EXISTS (SELECT 1 FROM patients_visits pv WHERE patients.patient_id = pv.Patient_Id AND pv.visit_state <> 'C' AND DATEDIFF(DAY, pv.Visit_date, GETDATE()) BETWEEN 61 AND 1095 AND pv.doctor_id IN (...))
+        -- Нет записи на будущее:
+        -- AND NOT EXISTS (SELECT 1 FROM patients_visits pv WHERE patients.patient_id = pv.Patient_Id AND pv.visit_state <> 'C' AND DATEDIFF(DAY, GETDATE(), pv.Visit_date) BETWEEN 0 AND 60 AND pv.doctor_id IN (...))
+        -- Была/не была услуга (patients_treatment):
+        -- AND NOT EXISTS (SELECT 1 FROM patients_treatment pt WHERE patients.patient_id = pt.Patient_id AND DATEDIFF(DAY, pt.Treatment_date, GETDATE()) BETWEEN 0 AND 149 AND pt.Procedure_id IN (...))
+        -- Не слали по этому сценарию за N дней:
+        AND NOT EXISTS (
+            SELECT 1 FROM messages m
+            INNER JOIN deliv_orders do ON do.Order_id = m.Order_id
+            WHERE do.Delivery_id = :DID
+              AND m.Contact_info = patients.cellphone
+              AND DATEDIFF(DAY, do.Created, GETDATE()) < 180
+        )
+  ) vv
+  LEFT JOIN (
+      SELECT v1.patient_id FROM patients v1
+      INNER JOIN patients v2 ON v2.cellphone = v1.cellphone
+      WHERE v1.patient_id > v2.patient_id
+  ) duplicatePatients ON vv.patient_id = duplicatePatients.patient_id
+  WHERE duplicatePatients.patient_id IS NULL
+  ```
+- Отдай готовый SQL сразу, коротко и по делу.
+
+### Режим 2. ПОЛНЫЙ КОНВЕЙЕР (только для большого аудита клиники или среза из буфера)
+Включается **только** когда пользователь дал срез базы (`00_snapshot_for_agent.sql`), выгрузки таблиц или явно попросил: *«проведи полный аудит сценариев клиники»* / *«разберись со срезом»*:
+1. **`zabota-recon`**: распаковывает срез в `tmp_clinic_<ID>` (`python tools/snapshot_to_sandbox.py --from-clipboard --clinic-id <ID>`), матчит бриф (`tools/brief_group_match.py`) или ищет причину неотправки сообщения.
+2. **`zabota-sql-coder`**: пишет патч-скрипт (`UPDATE`/`INSERT` с бэкапом `_bak_YYYYMMDD` и транзакцией `@@ROWCOUNT`).
+3. **`zabota-sql-auditor`**: проверяет патч через `python tools/verify_sql.py --db tmp_clinic_<ID>`.
+
+## Справочник документации (открывать ТОЛЬКО по прямой необходимости!)
+- Карта документации: `docs/zabota/README.md`.
+- Только если задача про импорт IDENT: `docs/zabota/import.md`; про Интегратор: `docs/zabota/integrator.md`.
+- Только если задача про архитектуру/PR2/Продюсер: `architecture.md`, `pr2.md`, `producer.md`.
+- Скиллы (загружать только когда нужны): `zabota-db` (запросы к локальной БД), `bitrix24` (задачи в браузере), `teamly` (регламенты из `docs/zabota/teamly/README.md`).
+- **Посмотреть второй монитор (RDP / Ассистент):** `powershell -ExecutionPolicy Bypass -File tools/look_screen.ps1` → читать `C:\Users\Владимир Капов\AppData\Local\Temp\opencode\screen_1.png`.
+- **Кириллица в выводе:** писать в файл UTF-8 и читать файлом.
 
 ## Запреты
-- Секреты (пароли, токены) хранить **только** в `credentials.local.ini` (файл в `.gitignore`). Не копировать их в документацию, чат и git-коммиты.
-- Пароли Teamly/Bitrix24 хранятся в `credentials.local.ini`; вход в браузер выполняет пользователь (сессия переживает перезапуск).
+- Секреты (пароли, токены) хранить **только** в `credentials.local.ini` (в `.gitignore`).
 - Не распаковывать `.7z` / `.zip` / `.rar` без явной просьбы.
-- Не делать `UPDATE` / `DELETE` / `INSERT` в рабочей БД без подтверждения.
-
-## Опорные точки
-- Локальный стенд (эталон схемы / песочница, **не** боевая база клиентов): `USERPC\ZABOTASQLSERVER1`, `wellness_new` (детали — в скилле `zabota-db`).
-- Импорт IDENT: `docs/zabota/import.md`.
-- Новый импорт (Интегратор): `docs/zabota/integrator.md`.
+- Не делать `UPDATE` / `DELETE` / `INSERT` в БД без подтверждения.
