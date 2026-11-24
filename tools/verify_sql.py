@@ -182,9 +182,9 @@ def static_audit_segment(sql: str) -> list[dict]:
 
         if not has_date_limit or subqueries_without_date:
             checks.append({
-                "level": "ERROR",
+                "level": "WARN",
                 "code": "SEGMENT_REPEAT_FOREVER",
-                "message": "Проверка `deliv_orders` (`Delivery_id`) без ограничения по дате (`DATEDIFF` / `Created` / `Delivery_dt`) — баг «повтор навсегда».",
+                "message": "Проверка `deliv_orders` (`Delivery_id`) без даты (`do.Created`) — норма для разовой акции (защита от повторной отправки), но баг для регулярных приглашений.",
             })
         else:
             checks.append({
