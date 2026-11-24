@@ -21,64 +21,61 @@ color: "#a855f7"
 - `procgroups` (`id`, `code`, `name`) + `procedurex` (`id`, `group_id`, `proc_id`, `exclude`, `code`).
 - `messages` (`Message_id`, `Order_id`, `Patient_id`, `Contact_info`, `sent`, `Message_state`) + `deliv_orders` (`Order_id`, `Delivery_id`, `Created`, `Delivery_dt`).
 
-## Эталонный каркас SQL-сегмента (`deliv_conditions.Expression`)
+## Эталонный каркас SQL-сегмента (`deliv_conditions.Expression` — фирменный стиль «акция с амоунтом»)
 ```sql
-SELECT TOP (:IPAT) vv.* FROM (
-    SELECT patients.* FROM vpatients patients
-    WHERE cellphone LIKE ('79%')
-      AND hide = 0 AND Exclude = 0
+SELECT TOP (:IPAT) vv.* from (select patients.* FROM vpatients patients
+WHERE 
+    cellphone LIKE ('79%')  
+    AND hide=0 AND Exclude=0
 
-      /* --- СЮДА ВСТАВЛЯТЬ УСЛОВИЯ БРИФА (все через AND; OR только если в брифе явно "ИЛИ") --- */
+	/*сюда вставлять свой код (блоки ниже по условиям брифа; все через AND, OR только если в брифе явно "ИЛИ")*/
 
-      -- Пример: Был визит 61..1095 дней назад:
-      AND EXISTS (
-          SELECT 1 FROM patients_visits pv
-          WHERE patients.patient_id = pv.Patient_Id
-            AND pv.visit_state <> 'C'
-            AND DATEDIFF(DAY, pv.Visit_date, GETDATE()) BETWEEN 61 AND 1095
-            AND pv.doctor_id IN (1, 2, 3)
-      )
+  -- [Кирпич: Нет визитов на будущее]
+  AND NOT EXISTS (SELECT 1 FROM patients_visits pv /*нет визитов на будущее */
+   WHERE patients.patient_id=pv.Patient_Id              
+   AND DATEDIFF(DAY,GETDATE(), pv.Visit_date) BETWEEN 0 AND 60
+   and pv.visit_state<>'C'
+   and pv.doctor_id in(1,2,3,4) /*ид докторов*/
+   ) 
 
-      -- Пример: Нет визитов на будущее (0..60 дней):
-      AND NOT EXISTS (
-          SELECT 1 FROM patients_visits pv
-          WHERE patients.patient_id = pv.Patient_Id
-            AND pv.visit_state <> 'C'
-            AND DATEDIFF(DAY, GETDATE(), pv.Visit_date) BETWEEN 0 AND 60
-            AND pv.doctor_id IN (1, 2, 3)
-      )
+  -- [Кирпич: Был визит в диапазоне]
+  AND EXISTS (SELECT 1 FROM patients_visits pv /* был визит в диапазоне от 61 до 1095*/
+   WHERE patients.patient_id=pv.Patient_Id
+   and pv.visit_state<>'C'
+   AND DATEDIFF(DAY,pv.Visit_date,GETDATE()) BETWEEN 61 AND 1095
+   and pv.doctor_id in(1,2,3,4) /*ид докторов*/
+   )
 
-      -- Пример: Не было конкретных услуг за 0..149 дней (СТРОГО ЧЕРЕЗ NOT EXISTS, НЕ ЧЕРЕЗ IN!):
-      AND NOT EXISTS (
-          SELECT 1 FROM patients_treatment pt
-          WHERE patients.patient_id = pt.Patient_id
-            AND DATEDIFF(DAY, pt.Treatment_date, GETDATE()) BETWEEN 0 AND 149
-            AND pt.Procedure_id IN (101, 102)
-      )
+  -- [Кирпич: Сумма оплат от N]
+  AND EXISTS ( 
+   SELECT pt.Patient_id FROM patients_treatment pt WHERE patients.patient_id = pt.Patient_id GROUP BY pt.Patient_id HAVING SUM(pt.Total)> 10000 /*оплаты от 10к*/
+  )
 
-      -- Пример: Сумма оказанных услуг > N:
-      AND EXISTS (
-          SELECT pt.Patient_id FROM patients_treatment pt
-          WHERE patients.patient_id = pt.Patient_id
-          GROUP BY pt.Patient_id HAVING SUM(pt.Total) > 10000
-      )
+  -- [Кирпич: Не было конкретных услуг за N дней — СТРОГО ЧЕРЕЗ NOT EXISTS]
+  AND NOT EXISTS (SELECT 1 FROM patients_treatment pt
+   WHERE patients.patient_id=pt.Patient_id
+   AND DATEDIFF(DAY, pt.Treatment_date, GETDATE()) BETWEEN 0 AND 149 /*не было услуг профгигиены за 149 дн*/
+   AND pt.Procedure_id IN (2943, 2743, 2736)
+   )
 
-      -- Ограничение повтора по этому сценарию за N дней (дата do.Created ОБЯЗАТЕЛЬНА!):
-      AND NOT EXISTS (
-          SELECT 1 FROM messages m
-          INNER JOIN deliv_orders do ON do.Order_id = m.Order_id
-          WHERE do.Delivery_id = :DID
-            AND m.Contact_info = patients.cellphone
-            AND DATEDIFF(DAY, do.Created, GETDATE()) < 180
-      )
-) vv
-LEFT JOIN (
+  -- [Кирпич: Не было сообщений этого сценария по patient_id / или любых сообщений за 180 дн (если нужно по брифу)]
+  -- AND NOT EXISTS(SELECT 1 from messages m INNER JOIN deliv_orders o ON o.Order_id=m.order_id WHERE m.Patient_id=patients.patient_id AND o.Delivery_id=:DID)
+  -- AND NOT EXISTS(SELECT 1 from messages m INNER JOIN deliv_orders o ON o.Order_id=m.order_id WHERE m.Patient_id=patients.patient_id AND DATEDIFF(DAY,o.created,GETDATE())<180)
+
+  AND                      
+  NOT EXISTS(SELECT 1 FROM messages m                              
+  INNER JOIN deliv_orders do ON do.Order_id=m.Order_id
+  WHERE do.Delivery_id=:DID              
+  AND m.Contact_info=patients.cellphone)) vv
+  LEFT JOIN (
     SELECT v1.patient_id
     FROM patients v1
     INNER JOIN patients v2 ON v2.cellphone = v1.cellphone
     WHERE v1.patient_id > v2.patient_id
-) duplicatePatients ON vv.patient_id = duplicatePatients.patient_id
-WHERE duplicatePatients.patient_id IS NULL
+   ) duplicatePatients ON vv.patient_id = duplicatePatients.patient_id
+  WHERE 
+  duplicatePatients.patient_id IS NULL
+  AND datepart(HOUR, GETDATE()) BETWEEN :ITIME1 AND :ITIME2
 ```
 
 ## Правила для патч-скриптов (`UPDATE` / `INSERT` / `DELETE`)
